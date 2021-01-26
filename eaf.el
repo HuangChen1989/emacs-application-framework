@@ -7,7 +7,7 @@
 ;; Copyright (C) 2018, Andy Stewart, all rights reserved.
 ;; Created: 2018-06-15 14:10:12
 ;; Version: 0.5
-;; Last-Updated: Tue Jan 19 01:15:08 2021 (-0500)
+;; Last-Updated: Sat Jan 23 06:43:13 2021 (-0500)
 ;;           By: Mingde (Matthew) Zeng
 ;; URL: https://github.com/manateelazycat/emacs-application-framework
 ;; Keywords:
@@ -83,12 +83,17 @@
 
 ;;;###autoload
 (defun eaf-install-dependencies ()
+  "An interactive function that run install-eaf.sh or install-eaf-win32.js for Linux or Windows respectively."
   (interactive)
-  (let ((default-directory "/sudo::")
-        (eaf-dir (file-name-directory (locate-library "eaf"))))
-    (shell-command (concat eaf-dir "install-eaf.sh" "&"))))
+  (let ((eaf-dir (file-name-directory (locate-library "eaf"))))
+    (cond ((eq system-type 'gnu/linux)
+           (let ((default-directory "/sudo::"))
+             (shell-command (concat eaf-dir "install-eaf.sh" "&"))))
+          ((memq system-type '(cygwin windows-nt ms-dos))
+           (shell-command (format "node %s" (concat eaf-dir "install-eaf-win32.js" "&"))))
+          ((eq system-type 'darwin)
+           (user-error "Unfortunately MacOS is not supported, see README for details")))))
 
-(require 'dbus)
 (require 'subr-x)
 (require 'map)
 (require 'bookmark)
@@ -98,6 +103,7 @@
 (require 'json)
 (require 's)
 (require 'eaf-server)
+(require 'epc)
 
 ;; Remove the relevant environment variables from the process-environment to disable QT scaling,
 ;; let EAF qt program follow the system scale.
@@ -208,7 +214,13 @@ been initialized."
 
 (defvar eaf-python-file (expand-file-name "eaf.py" (file-name-directory load-file-name)))
 
-(defvar eaf-process nil)
+(defvar eaf-server-port 9999)
+
+(defvar eaf-epc-process nil)
+
+(defvar eaf-internal-process nil)
+(defvar eaf-internal-process-prog nil)
+(defvar eaf-internal-process-args nil)
 
 (defvar eaf--active-buffers nil
   "Contains a list of '(buffer-url buffer-app-name buffer-args).")
@@ -225,6 +237,10 @@ been initialized."
 
 (defcustom eaf-grip-token ""
   "Github personal acess token, used by grip."
+  :type 'string)
+
+(defcustom eaf-name "*eaf*"
+  "Name of EAF buffer."
   :type 'string)
 
 (defcustom eaf-browser-search-engines `(("google" . "http://www.google.com/search?ie=utf-8&oe=utf-8&q=%s")
@@ -244,11 +260,7 @@ Each element has the form (NAME . URL).
 It must defined at `eaf-browser-search-engines'."
   :type 'string)
 
-(defcustom eaf-name "*eaf*"
-  "Name of EAF buffer."
-  :type 'string)
-
-(defcustom eaf-python-command "python3"
+(defcustom eaf-python-command (if (memq system-type '(cygwin windows-nt ms-dos)) "python3.exe" "python3")
   "The Python interpreter used to run eaf.py."
   :type 'string)
 
@@ -898,7 +910,7 @@ This should be used after setting `eaf-browser-continue-where-left-off' to t."
              (browser-url-list
               (with-temp-buffer (insert-file-contents browser-restore-file-path)
                                 (split-string (buffer-string) "\n" t))))
-        (if (process-live-p eaf-process)
+        (if (epc:live-p eaf-epc-process)
             (dolist (url browser-url-list)
               (eaf-open-browser url))
           (dolist (url browser-url-list)
@@ -1062,44 +1074,25 @@ A hashtable, key is url and value is title.")
   "Command to open current path or url with external application."
   (interactive)
   (let ((path-or-url (eaf-get-path-or-url)))
-    (cond ((string-equal system-type "windows-nt")
+    (cond ((memq system-type '(cygwin windows-nt ms-dos))
            (w32-shell-execute "open" path-or-url))
-          ((string-equal system-type "darwin")
+          ((eq system-type 'darwin)
            (concat "open " (shell-quote-argument path-or-url)))
-          ((string-equal system-type "gnu/linux")
+          ((eq system-type 'gnu/linux)
            (let ((process-connection-type nil))
              (start-process "" nil "xdg-open" path-or-url))))))
 
-(defun eaf-call (method &rest args)
-  "Call EAF Python process using `dbus-call-method' with METHOD and ARGS.
+(defun eaf-call-async (method &rest args)
+  "Call Python EPC function METHOD and ARGS asynchronously."
+  (deferred:$
+    (epc:call-deferred eaf-epc-process (read method) args)))
 
-Return t or nil based on the result of the call."
-  (let ((result (apply #'dbus-call-method
-                       :session     ; use the session (not system) bus
-                       "com.lazycat.eaf"  ; service name
-                       "/com/lazycat/eaf" ; path name
-                       "com.lazycat.eaf"  ; interface name
-                       method
-                       :timeout 1000000
-                       args)))
-    (cond ((equal result "True") t)
-          ((equal result "False") nil)
-          (t result))))
-
-(defun eaf-call-async (method handler &rest args)
-  "Call EAF Python process using `dbus-call-method-asynchronously' with METHOD, HANDLER and ARGS."
-  (apply #'dbus-call-method-asynchronously
-         :session                   ; use the session (not system) bus
-         "com.lazycat.eaf"          ; service name
-         "/com/lazycat/eaf"         ; path name
-         "com.lazycat.eaf"          ; interface name
-         method
-         handler
-         :timeout 1000000
-         args))
+(defun eaf-call-sync (method &rest args)
+  "Call Python EPC function METHOD and ARGS synchronously."
+  (epc:call-sync eaf-epc-process (read method) args))
 
 (defun eaf-get-emacs-xid (frame)
-  "Get emacs FRAME xid."
+  "Get Emacs FRAME xid."
   (frame-parameter frame 'window-id))
 
 (defun eaf-serialization-var-list ()
@@ -1111,31 +1104,39 @@ Return t or nil based on the result of the call."
   (cond
    ((not eaf--active-buffers)
     (user-error "[EAF] Please initiate EAF with eaf-open-... functions only"))
-   ((process-live-p eaf-process)
+   ((epc:live-p eaf-epc-process)
     (user-error "[EAF] Process is already running")))
-  (let ((eaf-args (append
-                   (list eaf-python-file)
-                   (eaf-get-render-size)
-                   (list eaf-proxy-host eaf-proxy-port eaf-proxy-type eaf-config-location)
-                   (list (eaf-serialization-var-list))
-                   ))
-        (gdb-args (list "-batch" "-ex" "run" "-ex" "bt" "--args" eaf-python-command))
-        (process-environment (cl-copy-list process-environment)))
-    (unless (equal (getenv "WAYLAND_DISPLAY") "")
-      (setenv "QT_QPA_PLATFORM" "xcb"))
-    (setq eaf-process
-          (if eaf-enable-debug
-              (apply #'start-process eaf-name eaf-name "gdb" (append gdb-args eaf-args))
-            (apply #'start-process eaf-name eaf-name eaf-python-command eaf-args))))
-  (eaf-server-start 9999)
-  (set-process-query-on-exit-flag eaf-process nil)
-  (set-process-sentinel
-   eaf-process
-   #'(lambda (process event)
-       (when (or (string-prefix-p "exited abnormally with code" event)
-                 (string-match "finished" event))
-         (switch-to-buffer eaf-name))
-       (message "[EAF] %s %s" process (replace-regexp-in-string "\n$" "" event))))
+  (let* ((eaf-args (append
+                    (list eaf-python-file)
+                    (eaf-get-render-size)
+                    (list eaf-proxy-host eaf-proxy-port eaf-proxy-type)
+                    (list eaf-config-location)
+                    (list (number-to-string eaf-server-port))
+                    (list (eaf-serialization-var-list))
+                    ))
+         (gdb-args (list "-batch" "-ex" "run" "-ex" "bt" "--args" eaf-python-command))
+         (process-environment (cl-copy-list process-environment)))
+
+    (let ((wayland-display (getenv "WAYLAND_DISPLAY")))
+      (when (and wayland-display (not (string= wayland-display "")))
+        (setenv "QT_QPA_PLATFORM" "xcb")))
+
+    ;; Start emacs server.
+    (eaf-server-start eaf-server-port)
+
+    ;; Start python process.
+    (if eaf-enable-debug
+        (progn
+          (setq eaf-internal-process-prog "gdb")
+          (setq eaf-internal-process-args (append gdb-args eaf-args)))
+      (setq eaf-internal-process-prog eaf-python-command)
+      (setq eaf-internal-process-args eaf-args))
+
+    (setq eaf-internal-process
+          (apply 'start-process
+                 eaf-name eaf-name
+                 eaf-internal-process-prog eaf-internal-process-args))
+    (set-process-query-on-exit-flag eaf-internal-process nil))
   (message "[EAF] Process starting..."))
 
 (defun eaf-stop-process (&optional restart)
@@ -1153,7 +1154,7 @@ If RESTART is non-nil, cached URL and app-name will not be cleared."
     (remove-hook 'kill-buffer-hook #'eaf--org-preview-monitor-kill)
     (remove-hook 'window-size-change-functions #'eaf-monitor-window-size-change)
     (remove-hook 'window-configuration-change-hook #'eaf-monitor-configuration-change)
-    (eaf-server-stop 9999))
+    (eaf-server-stop eaf-server-port))
 
   ;; Clean `eaf-org-file-list' and `eaf-org-killed-file-list'.
   (dolist (org-file-name eaf-org-file-list)
@@ -1178,11 +1179,11 @@ If RESTART is non-nil, cached URL and app-name will not be cleared."
 (defun eaf--kill-python-process ()
   "Kill EAF background python process."
   (interactive)
-  (if (process-live-p eaf-process)
+  (if (epc:live-p eaf-epc-process)
       ;; Delete EAF server process.
       (progn
-        (delete-process eaf-process)
-        ;; Kill *eaf* buffer
+        (epc:stop-epc eaf-epc-process)
+        ;; Kill *eaf* buffer.
         (when (get-buffer eaf-name)
           (kill-buffer eaf-name))
         (message "[EAF] Process terminated."))
@@ -1251,14 +1252,14 @@ When called interactively, copy to ‘kill-ring’."
   (interactive)
   (if (derived-mode-p 'eaf-mode)
       (if (called-interactively-p 'any)
-          (message "%s" (kill-new (eaf-call "call_function" eaf--buffer-id "get_url")))
-        (eaf-call "call_function" eaf--buffer-id "get_url"))
+          (message "%s" (kill-new (eaf-call-sync "call_function" eaf--buffer-id "get_url")))
+        (eaf-call-sync "call_function" eaf--buffer-id "get_url"))
     (user-error "This command can only be called in an EAF buffer!")))
 
 (defun eaf-toggle-fullscreen ()
   "Toggle fullscreen."
   (interactive)
-  (eaf-call "execute_function" eaf--buffer-id "toggle_fullscreen" (key-description (this-command-keys-vector))))
+  (eaf-call-async "execute_function" eaf--buffer-id "toggle_fullscreen" (key-description (this-command-keys-vector))))
 
 (defun eaf-share-path-or-url ()
   "Share the current file path or web URL as QRCode."
@@ -1274,7 +1275,7 @@ When called interactively, copy to ‘kill-ring’."
           (interactive)
           ;; Ensure this is only called from EAF buffer
           (if (derived-mode-p 'eaf-mode)
-              (eaf-call "execute_function" eaf--buffer-id fun (key-description (this-command-keys-vector)))
+              (eaf-call-async "execute_function" eaf--buffer-id fun (key-description (this-command-keys-vector)))
             (message "%s command can only be called in an EAF buffer!" sym)))
         (format
          "Proxy function to call \"%s\" on the Python side.
@@ -1341,17 +1342,9 @@ keybinding variable to eaf-app-binding-alist."
       (setq mode-name (concat "EAF/" app-name)))
     eaf-buffer))
 
-(defun eaf-is-support (url)
-  (dbus-call-method
-   :session "com.lazycat.eaf"
-   "/com/lazycat/eaf"
-   "com.lazycat.eaf"
-   "is_support"
-   url))
-
 (defun eaf-monitor-window-size-change (frame)
   "Delay some time and run `eaf-try-adjust-view-with-frame-size' to compare with Emacs FRAME size."
-  (when (process-live-p eaf-process)
+  (when (epc:live-p eaf-epc-process)
     (setq eaf-last-frame-width (frame-pixel-width frame))
     (setq eaf-last-frame-height (frame-pixel-height frame))
     (run-with-timer 1 nil (lambda () (eaf-try-adjust-view-with-frame-size frame)))))
@@ -1365,7 +1358,7 @@ keybinding variable to eaf-app-binding-alist."
 (defun eaf-monitor-configuration-change (&rest _)
   "EAF function to respond when detecting a window configuration change."
   (when (and eaf--monitor-configuration-p
-             (process-live-p eaf-process))
+             (epc:live-p eaf-epc-process))
     (ignore-errors
       (let (view-infos)
         (dolist (frame (frame-list))
@@ -1389,9 +1382,7 @@ keybinding variable to eaf-app-binding-alist."
                                   (eaf-get-emacs-xid frame)
                                   x y w h)
                           view-infos)))))))
-        ;; I don't know how to make Emacs send dbus-message with two-dimensional list.
-        ;; So I package two-dimensional list in string, then unpack on server side. ;)
-        (eaf-call-async "update_views" nil (mapconcat #'identity view-infos ","))))))
+        (eaf-call-async "update_views" (mapconcat #'identity view-infos ","))))))
 
 (defun eaf--delete-org-preview-file (org-file)
   "Delete the org-preview file when given ORG-FILE name."
@@ -1419,7 +1410,7 @@ keybinding variable to eaf-app-binding-alist."
 (defun eaf--monitor-buffer-kill ()
   "A function monitoring when an EAF buffer is killed."
   (ignore-errors
-    (eaf-call "kill_buffer" eaf--buffer-id))
+    (eaf-call-async "kill_buffer" eaf--buffer-id))
 
   ;; Kill eaf process when last eaf buffer closed.
   ;; We need add timer to avoid the last web page kill when terminal is exited.
@@ -1446,7 +1437,7 @@ keybinding variable to eaf-app-binding-alist."
              (when (equal eaf--buffer-app-name "browser")
                (setq browser-urls (concat eaf--buffer-url "\n" browser-urls)))))
          nil browser-restore-file-path)))
-    (eaf-call "kill_emacs")))
+    (eaf-call-async "kill_emacs")))
 
 (defun eaf--org-preview-monitor-kill ()
   "Function monitoring when org-preview application is killed."
@@ -1461,74 +1452,74 @@ keybinding variable to eaf-app-binding-alist."
 
 (defun eaf--org-preview-monitor-buffer-save ()
   "Save org-preview buffer."
-  (when (process-live-p eaf-process)
+  (when (epc:live-p eaf-epc-process)
     (ignore-errors
       ;; eaf-org-file-list?
       (org-html-export-to-html)
-      (eaf-call "update_buffer_with_url" "app.org-previewer.buffer" (buffer-file-name) "")
+      (eaf-call-async "update_buffer_with_url" "app.org-previewer.buffer" (buffer-file-name) "")
       (message "[EAF] Export %s to HTML." (buffer-file-name)))))
 
 (defun eaf-keyboard-quit ()
   "Wrap around `keyboard-quit' and signals a ‘quit’ condition to EAF applications."
   (interactive)
-  (eaf-call "action_quit" eaf--buffer-id)
+  (eaf-call-async "action_quit" eaf--buffer-id)
   (call-interactively 'keyboard-quit))
 
 (defun eaf-send-key ()
   "Directly send key to EAF Python side."
   (interactive)
-  (eaf-call "send_key" eaf--buffer-id (key-description (this-command-keys-vector))))
+  (eaf-call-async "send_key" eaf--buffer-id (key-description (this-command-keys-vector))))
 
 (defun eaf-send-down-key ()
   "Directly send down key to EAF Python side."
   (interactive)
-  (eaf-call "send_key" eaf--buffer-id "<down>"))
+  (eaf-call-async "send_key" eaf--buffer-id "<down>"))
 
 (defun eaf-send-up-key ()
   "Directly send up key to EAF Python side."
   (interactive)
-  (eaf-call "send_key" eaf--buffer-id "<up>"))
+  (eaf-call-async "send_key" eaf--buffer-id "<up>"))
 
 (defun eaf-send-return-key ()
   "Directly send return key to EAF Python side."
   (interactive)
-  (eaf-call "send_key" eaf--buffer-id "RET"))
+  (eaf-call-async "send_key" eaf--buffer-id "RET"))
 
 (defun eaf-send-key-sequence ()
   "Directly send key sequence to EAF Python side."
   (interactive)
-  (eaf-call "send_key_sequence" eaf--buffer-id (key-description (this-command-keys-vector))))
+  (eaf-call-async "send_key_sequence" eaf--buffer-id (key-description (this-command-keys-vector))))
 
 (defun eaf-send-ctrl-return-sequence ()
   "Directly send Ctrl-Return key sequence to EAF Python side."
   (interactive)
-  (eaf-call "send_key_sequence" eaf--buffer-id "C-RET"))
+  (eaf-call-async "send_key_sequence" eaf--buffer-id "C-RET"))
 
 (defun eaf-send-alt-backspace-sequence ()
   "Directly send Alt-Backspace key sequence to EAF Python side."
   (interactive)
-  (eaf-call "send_key_sequence" eaf--buffer-id "M-<backspace>"))
+  (eaf-call-async "send_key_sequence" eaf--buffer-id "M-<backspace>"))
 
 (defun eaf-send-shift-return-sequence ()
   "Directly send Shift-Return key sequence to EAF Python side."
   (interactive)
-  (eaf-call "send_key_sequence" eaf--buffer-id "S-RET"))
+  (eaf-call-async "send_key_sequence" eaf--buffer-id "S-RET"))
 
 (defun eaf-send-second-key-sequence ()
   "Send second part of key sequence to terminal."
   (interactive)
-  (eaf-call "send_key_sequence"
-            eaf--buffer-id
-            (nth 1 (split-string (key-description (this-command-keys-vector))))))
+  (eaf-call-async "send_key_sequence"
+                  eaf--buffer-id
+                  (nth 1 (split-string (key-description (this-command-keys-vector))))))
 
 (defun eaf-set (sym val)
   "Similar to `set', but store SYM with VAL in EAF Python side, and return VAL.
 
 For convenience, use the Lisp macro `eaf-setq' instead."
   (setf (map-elt eaf-var-list sym) val)
-  (when (process-live-p eaf-process)
+  (when (epc:live-p eaf-epc-process)
     ;; Update python side variable dynamically.
-    (eaf-call "update_emacs_var_dict" (eaf-serialization-var-list)))
+    (eaf-call-async "update_emacs_var_dict" (eaf-serialization-var-list)))
   val)
 
 (defmacro eaf-setq (var val)
@@ -1596,10 +1587,20 @@ If EAF-SPECIFIC is true, this is modifying variables in `eaf-var-list'"
        (kill-buffer buffer)
        (throw 'found-eaf t)))))
 
-(defun eaf--first-start (webengine-include-private-codec)
+(defun eaf--first-start (eaf-epc-port webengine-include-private-codec)
   "Call `eaf--open-internal' upon receiving `start_finish' signal from server.
 
 WEBENGINE-INCLUDE-PRIVATE-CODEC is only useful when app-name is video-player."
+  ;; Make EPC process.
+  (setq eaf-epc-process (make-epc:manager
+                         :server-process eaf-internal-process
+                         :commands (cons eaf-internal-process-prog eaf-internal-process-args)
+                         :title (mapconcat 'identity (cons eaf-internal-process-prog eaf-internal-process-args) " ")
+                         :port eaf-epc-port
+                         :connection (epc:connect "localhost" eaf-epc-port)
+                         ))
+  (epc:init-epc-layer eaf-epc-process)
+
   ;; If webengine-include-private-codec and app name is "video-player", replace by "js-video-player".
   (setq eaf--webengine-include-private-codec webengine-include-private-codec)
   (let* ((first-buffer-info (pop eaf--active-buffers))
@@ -1640,8 +1641,8 @@ WEBENGINE-INCLUDE-PRIVATE-CODEC is only useful when app-name is video-player."
   "Handles input message INTERACTIVE-STRING on the Python side given INPUT-BUFFER-ID and CALLBACK-TYPE."
   (let* ((input-message (eaf-read-input (concat "[EAF/" eaf--buffer-app-name "] " interactive-string) interactive-type initial-content)))
     (if input-message
-        (eaf-call "handle_input_response" input-buffer-id callback-tag input-message)
-      (eaf-call "cancel_input_response" input-buffer-id callback-tag))))
+        (eaf-call-async "handle_input_response" input-buffer-id callback-tag input-message)
+      (eaf-call-async "cancel_input_response" input-buffer-id callback-tag))))
 
 (defun eaf-read-input (interactive-string interactive-type initial-content)
   "EAF's multi-purpose read-input function which read an INTERACTIVE-STRING with INITIAL-CONTENT, determines the function base on INTERACTIVE-TYPE."
@@ -1656,18 +1657,10 @@ WEBENGINE-INCLUDE-PRIVATE-CODEC is only useful when app-name is video-player."
 
 (defun eaf--open-internal (url app-name args)
   "Open an EAF application internally with URL, APP-NAME and ARGS."
-  (let* ((buffer (eaf--create-buffer url app-name args))
-         (buffer-result
-          (with-current-buffer buffer
-            (eaf-call "new_buffer"
-                      eaf--buffer-id url app-name args))))
-    (cond ((equal buffer-result "")
-           (eaf--display-app-buffer app-name buffer))
-          (t
-           ;; Kill buffer and show error message from python server.
-           (kill-buffer buffer)
-           (switch-to-buffer eaf-name)
-           (message buffer-result))))
+  (let* ((buffer (eaf--create-buffer url app-name args)))
+    (with-current-buffer buffer
+      (eaf-call-async "new_buffer" eaf--buffer-id url app-name args))
+    (eaf--display-app-buffer app-name buffer))
   (eaf--post-open-actions url app-name args))
 
 (defun eaf--post-open-actions (url app-name args)
@@ -1889,7 +1882,9 @@ choose a search engine defined in `eaf-browser-search-engines'"
                                eaf-browser-search-engines))
                    (error (format "[EAF/browser] Search engine %s is unknown to EAF!" real-search-engine))))
          (current-symbol (if mark-active
-                             (buffer-substring (region-beginning) (region-end))
+                             (if (eq major-mode 'pdf-view-mode)
+                                 (car (pdf-view-active-region-text))
+                               (buffer-substring (region-beginning) (region-end)))
                            (symbol-at-point)))
          (search-url (if search-string
                          (format link search-string)
@@ -2025,7 +2020,7 @@ When called interactively, URL accepts a file that can be opened by EAF."
   (add-hook 'window-size-change-functions #'eaf-monitor-window-size-change)
   (add-hook 'window-configuration-change-hook #'eaf-monitor-configuration-change)
   ;; Open URL with EAF application
-  (if (process-live-p eaf-process)
+  (if (epc:live-p eaf-epc-process)
       (let (exists-eaf-buffer)
         ;; Try to open buffer
         (catch 'found-eaf
@@ -2113,21 +2108,21 @@ Make sure that your smartphone is connected to the same WiFi network as this com
   ;; Note: pickup buffer-id from buffer name and not restore buffer-id from buffer local variable.
   ;; Then we can switch edit buffer to any other mode, such as org-mode, to confirm buffer string.
   (cond ((equal eaf-mindmap--current-add-mode "sub")
-         (eaf-call "update_multiple_sub_nodes"
-                   eaf--buffer-id
-                   (buffer-string)))
+         (eaf-call-async "update_multiple_sub_nodes"
+                         eaf--buffer-id
+                         (buffer-string)))
         ((equal eaf-mindmap--current-add-mode "brother")
-         (eaf-call "update_multiple_brother_nodes"
-                   eaf--buffer-id
-                   (buffer-string)))
+         (eaf-call-async "update_multiple_brother_nodes"
+                         eaf--buffer-id
+                         (buffer-string)))
         ((equal eaf-mindmap--current-add-mode "middle")
-         (eaf-call "update_multiple_middle_nodes"
-                   eaf--buffer-id
-                   (buffer-string)))
+         (eaf-call-async "update_multiple_middle_nodes"
+                         eaf--buffer-id
+                         (buffer-string)))
         (t
-         (eaf-call "update_focus_text"
-                   eaf--buffer-id
-                   (buffer-string))))
+         (eaf-call-async "update_focus_text"
+                         eaf--buffer-id
+                         (base64-encode-string (encode-coding-string (buffer-string) 'utf-8)))))
   (kill-buffer)
   (delete-window))
 
@@ -2221,15 +2216,13 @@ Make sure that your smartphone is connected to the same WiFi network as this com
   (setq-local eaf-fullscreen-p nil)
   (eaf-monitor-configuration-change))
 
-(dbus-register-service :session "com.lazycat.emacs")
-
 (defun eaf-browser-send-esc-or-exit-fullscreen ()
   "Escape fullscreen status if browser current is fullscreen.
 Otherwise send key 'esc' to browser."
   (interactive)
   (if eaf-fullscreen-p
-      (eaf-call "execute_function" eaf--buffer-id "exit_fullscreen" "<escape>")
-    (eaf-call "send_key" eaf--buffer-id "<escape>")))
+      (eaf-call-async "execute_function" eaf--buffer-id "exit_fullscreen" "<escape>")
+    (eaf-call-async "send_key" eaf--buffer-id "<escape>")))
 
 ;; Update and load the theme
 (defun eaf-get-theme-mode ()
@@ -2266,8 +2259,8 @@ Otherwise send key 'esc' to browser."
   "Create PDF outline."
   (interactive)
   (let ((buffer-name (buffer-name (current-buffer)))
-        (toc (eaf-call "call_function" eaf--buffer-id "get_toc"))
-        (page-number (string-to-number (eaf-call "call_function" eaf--buffer-id "current_page"))))
+        (toc (eaf-call-sync "call_function" eaf--buffer-id "get_toc"))
+        (page-number (string-to-number (eaf-call-sync "call_function" eaf--buffer-id "current_page"))))
     ;; Save window configuration before outline.
     (setq eaf-pdf-outline-window-configuration (current-window-configuration))
 
@@ -2295,12 +2288,24 @@ Otherwise send key 'esc' to browser."
          (page-num (replace-regexp-in-string "\n" "" (car (last (s-split " " line))))))
     ;; Jump to page.
     (switch-to-buffer-other-window eaf-pdf-outline-original-buffer-name)
-    (eaf-call "call_function_with_args" eaf--buffer-id "jump_to_page_with_num" (format "%s" page-num))
+    (eaf-call-sync "call_function_with_args" eaf--buffer-id "jump_to_page_with_num" (format "%s" page-num))
 
     ;; Restore window configuration before outline operation.
     (when eaf-pdf-outline-window-configuration
       (set-window-configuration eaf-pdf-outline-window-configuration)
       (setq eaf-pdf-outline-window-configuration nil))))
+
+(defun eaf-pdf-get-annots (page)
+  "Return a map of annotations on PAGE.
+
+The key is the annot id on PAGE."
+  (eaf-call-sync "call_function_with_args" eaf--buffer-id "get_annots" (format "%s" page)))
+
+(defun eaf-pdf-jump-to-annot (annot)
+  "Jump to specifical pdf annot."
+  (let ((rect (gethash "rect" annot))
+        (page (gethash "page" annot)))
+    (eaf-call-sync "call_function_with_args" eaf--buffer-id "jump_to_rect" (format "%s" page) rect)))
 
 (defun eaf--get-current-desktop-name ()
   "Get current desktop name by `wmctrl'."
@@ -2313,8 +2318,18 @@ Otherwise send key 'esc' to browser."
         "")
     eaf-wm-name))
 
-(defun eaf-activate-emacs-window ()
-  "Activate emacs window."
+(defun eaf--activate-emacs-win32-window()
+  "Use vbs activate emacs win32 window."
+  (let* ((activate-window-file-path
+          (concat eaf-config-location "activate-window.vbs"))
+         (activate-window-file-exists (file-exists-p activate-window-file-path)))
+    (unless activate-window-file-exists
+      (with-temp-file activate-window-file-path
+        (insert "set WshShell = CreateObject(\"WScript.Shell\")\nWshShell.AppActivate Wscript.Arguments(0)")))
+    (shell-command-to-string (format "cscript %s %s" activate-window-file-path (emacs-pid)))))
+
+(defun eaf--activate-emacs-linux-window ()
+  "Activate emacs window by `wmctrl'."
   (if (member (eaf--get-current-desktop-name) eaf-wm-focus-fix-wms)
       ;; When switch app focus in WM, such as, i3 or qtile.
       ;; Emacs window cannot get the focus normally if mouse in EAF buffer area.
@@ -2331,6 +2346,12 @@ Otherwise send key 'esc' to browser."
     (if (executable-find "wmctrl")
         (shell-command-to-string (format "wmctrl -i -a $(wmctrl -lp | awk -vpid=$PID '$3==%s {print $1; exit}')" (emacs-pid)))
       (message "Please install wmctrl to active emacs window."))))
+
+(defun eaf-activate-emacs-window()
+  "Activate emacs window."
+  (if (memq system-type '(cygwin windows-nt ms-dos))
+      (eaf--activate-emacs-win32-window)
+    (eaf--activate-emacs-linux-window)))
 
 (defun eaf-elfeed-open-url ()
   "Display the currently selected item in an eaf buffer."
@@ -2371,6 +2392,10 @@ Otherwise send key 'esc' to browser."
         ("up" (windmove-up))
         ("below" (windmove-down))
         ))))
+
+(defun eaf--change-default-directory (directory)
+  "Change default directory."
+  (setq default-directory directory))
 
 ;;;;;;;;;;;;;;;;;;;; Utils ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defun eaf-get-view-info ()
@@ -2452,8 +2477,8 @@ Otherwise send key 'esc' to browser."
   (other-window +1)
   (if (derived-mode-p 'eaf-mode)
       (progn
-        (eaf-call "scroll_other_buffer" (eaf-get-view-info) "up"
-                  (if arg "line" "page"))
+        (eaf-call-async "scroll_other_buffer" (eaf-get-view-info) "up"
+                        (if arg "line" "page"))
         (other-window -1))
     (other-window -1)
     (apply orig-fun arg args)))
@@ -2464,8 +2489,8 @@ Otherwise send key 'esc' to browser."
   (other-window +1)
   (if (derived-mode-p 'eaf-mode)
       (progn
-        (eaf-call "scroll_other_buffer" (eaf-get-view-info) "down"
-                  (if arg "line" "page"))
+        (eaf-call-async "scroll_other_buffer" (eaf-get-view-info) "down"
+                        (if arg "line" "page"))
         (other-window -1))
     (other-window -1)
     (apply orig-fun arg args)))
@@ -2478,9 +2503,9 @@ Otherwise send key 'esc' to browser."
   (other-window +1)
   (if (derived-mode-p 'eaf-mode)
       (progn
-        (eaf-call "scroll_other_buffer" (eaf-get-view-info)
-                  (if (string-equal direction "up") "up" "down")
-                  (if line "line" "page"))
+        (eaf-call-async "scroll_other_buffer" (eaf-get-view-info)
+                        (if (string-equal direction "up") "up" "down")
+                        (if line "line" "page"))
         (other-window -1))
     (other-window -1)
     (apply orig-fun direction line args)))

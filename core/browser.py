@@ -124,7 +124,8 @@ class BrowserView(QWebEngineView):
 
     def open_downloads_setting(self):
         ''' Open aria2 download manage page. '''
-        self.open_url_new_buffer("file://" + (os.path.join(os.path.dirname(__file__), "aria2-ng", "index.html")))
+        index_file = os.path.join(os.path.dirname(__file__), "aria2-ng", "index.html")
+        self.open_url_new_buffer(QUrl.fromLocalFile(index_file).toString())
 
     def read_js_content(self, js_file):
         ''' Read content of JavaScript(js) files.'''
@@ -169,7 +170,7 @@ class BrowserView(QWebEngineView):
         else:
             self.web_page.findText(self.search_term)
 
-    @interactive()
+    @interactive
     def toggle_adblocker(self):
         ''' Change adblocker status.'''
         if self.buffer.emacs_var_dict["eaf-browser-enable-adblocker"] == "true":
@@ -181,7 +182,7 @@ class BrowserView(QWebEngineView):
             self.load_adblocker()
             self.buffer.message_to_emacs.emit("Successfully enabled adblocker!")
 
-    @interactive()
+    @interactive
     def save_page_password(self):
         ''' Record form data.'''
         if self.buffer.emacs_var_dict["eaf-browser-enable-autofill"] == "true":
@@ -190,7 +191,7 @@ class BrowserView(QWebEngineView):
         else:
             self.buffer.message_to_emacs.emit("Autofill is not enabled! Enable it with C-t")
 
-    @interactive()
+    @interactive
     def toggle_password_autofill(self):
         ''' Toggle Autofill status for password data'''
         if self.buffer.emacs_var_dict["eaf-browser-enable-autofill"] == "false":
@@ -205,7 +206,7 @@ class BrowserView(QWebEngineView):
             else:
                 self.buffer.message_to_emacs.emit("Successfully changed autofill data!")
 
-    @interactive()
+    @interactive
     def search_text_forward(self):
         ''' Forward Search Text.'''
         if self.search_term == "":
@@ -213,7 +214,7 @@ class BrowserView(QWebEngineView):
         else:
             self._search_text(self.search_term)
 
-    @interactive()
+    @interactive
     def search_text_backward(self):
         ''' Backward Search Text.'''
         if self.search_term == "":
@@ -221,7 +222,7 @@ class BrowserView(QWebEngineView):
         else:
             self._search_text(self.search_term, True)
 
-    @interactive()
+    @interactive
     def action_quit(self):
         ''' Quit action.'''
         if self.search_term != "":
@@ -378,12 +379,12 @@ class BrowserView(QWebEngineView):
         ''' Scroll down.'''
         self.eval_js("document.scrollingElement.scrollBy(0, -50)")
 
-    @interactive()
+    @interactive
     def scroll_up_page(self):
         ''' Scroll page up.'''
         self.eval_js("document.scrollingElement.scrollBy({left: 0, top: window.innerHeight/2, behavior: '" + self.buffer.emacs_var_dict["eaf-browser-scroll-behavior"] + "'})")
 
-    @interactive()
+    @interactive
     def insert_or_scroll_up_page(self):
         '''
 If input is focus send space key to insert space.
@@ -411,7 +412,7 @@ Otherwise, scroll page up.
         ''' Scroll to the bottom.'''
         self.eval_js("document.scrollingElement.scrollTo({left: 0, top: document.body.scrollHeight, behavior: '" + self.buffer.emacs_var_dict["eaf-browser-scroll-behavior"] + "'})")
 
-    @interactive()
+    @interactive
     def get_selection_text(self):
         ''' Get the selected text.'''
         return self.execute_js(self.get_selection_text_js)
@@ -438,17 +439,17 @@ Otherwise, scroll page up.
         ''' Cut selected text.'''
         self.triggerPageAction(self.web_page.Cut)
 
-    @interactive()
+    @interactive
     def undo_action(self):
         ''' Undo action.'''
         self.triggerPageAction(self.web_page.Undo)
 
-    @interactive()
+    @interactive
     def redo_action(self):
         ''' Redo action.'''
         self.triggerPageAction(self.web_page.Redo)
 
-    @interactive()
+    @interactive
     def exit_fullscreen(self):
         ''' Exit full screen.'''
         self.triggerPageAction(self.web_page.ExitFullScreen)
@@ -468,7 +469,7 @@ Otherwise, scroll page up.
         ''' Select input text.'''
         self.eval_js(self.select_input_text_js)
 
-    @interactive()
+    @interactive
     def get_url(self):
         ''' Get current url.'''
         return self.url().toString().replace(" ", "%20")
@@ -497,7 +498,7 @@ Otherwise, scroll page up.
         self.load_marker_file()
         link = self.execute_js("Marker.gotoMarker('%s', Marker.getMarkerAction)" % str(marker))
         self.cleanup_links_dom()
-        if link.startswith("eaf::"):
+        if link is None or link.startswith("eaf::"):
             print(link)
             return False
         else:
@@ -561,7 +562,7 @@ Otherwise, scroll page up.
         ''' Get the focus text.'''
         return self.execute_js(self.get_focus_text_js)
 
-    @interactive()
+    @interactive
     def set_focus_text(self, new_text):
         ''' Set the focus text.'''
         self.set_focus_text_js = self.set_focus_text_raw.replace("%1", string_to_base64(new_text));
@@ -572,7 +573,7 @@ Otherwise, scroll page up.
         ''' input in focus.'''
         self.execute_js(self.focus_input_js)
 
-    @interactive()
+    @interactive
     def clear_focus(self):
         ''' Clear the focus.'''
         self.eval_js(self.clear_focus_js)
@@ -664,7 +665,7 @@ class BrowserBuffer(Buffer):
             self.nopostfix_url_pattern = re.compile("^[^#\?]*")
             self.history_close_file_path = os.path.join(self.config_dir, "browser", "history", "close.txt")
             touch(self.history_log_file_path)
-            with open(self.history_log_file_path, "r") as f:
+            with open(self.history_log_file_path, "r", encoding="utf-8") as f:
                 raw_list = f.readlines()
                 for raw_his in raw_list:
                     his_line = re.match(self.history_pattern, raw_his)
@@ -1155,74 +1156,74 @@ class BrowserBuffer(Buffer):
 
             self.caret_toggle_browsing()
 
-    @interactive()
+    @interactive
     def caret_next_sentence(self):
         ''' Switch to next line in caret browsing.'''
         if self.caret_browsing_mode:
             self.buffer_widget.eval_js("CaretBrowsing.move('forward', 'sentence');")
 
-    @interactive()
+    @interactive
     def caret_previous_sentence(self):
         ''' Switch to previous line in caret browsing.'''
         if self.caret_browsing_mode:
             self.buffer_widget.eval_js("CaretBrowsing.move('backward', 'sentence');")
 
-    @interactive()
+    @interactive
     def caret_next_line(self):
         ''' Switch to next line in caret browsing.'''
         if self.caret_browsing_mode:
             self.buffer_widget.eval_js("CaretBrowsing.move('forward', 'line');")
 
-    @interactive()
+    @interactive
     def caret_previous_line(self):
         ''' Switch to previous line in caret browsing.'''
         if self.caret_browsing_mode:
             self.buffer_widget.eval_js("CaretBrowsing.move('backward', 'line');")
 
-    @interactive()
+    @interactive
     def caret_next_character(self):
         ''' Switch to next character in caret browsing.'''
         if self.caret_browsing_mode:
             self.buffer_widget.eval_js("CaretBrowsing.move('forward', 'character');")
 
-    @interactive()
+    @interactive
     def caret_previous_character(self):
         ''' Switch to previous character in caret browsing.'''
         if self.caret_browsing_mode:
             self.buffer_widget.eval_js("CaretBrowsing.move('backward', 'character');")
 
-    @interactive()
+    @interactive
     def caret_next_word(self):
         ''' Switch to next word in caret browsing.'''
         if self.caret_browsing_mode:
             self.buffer_widget.eval_js("CaretBrowsing.move('forward', 'word');")
 
-    @interactive()
+    @interactive
     def caret_previous_word(self):
         ''' Switch to previous word in caret browsing.'''
         if self.caret_browsing_mode:
             self.buffer_widget.eval_js("CaretBrowsing.move('backward', 'word');")
 
-    @interactive()
+    @interactive
     def caret_to_bottom(self):
         ''' Switch to next word in caret browsing.'''
         if self.caret_browsing_mode:
             self.buffer_widget.eval_js("CaretBrowsing.move('forward', 'documentboundary');")
 
-    @interactive()
+    @interactive
     def caret_to_top(self):
         ''' Switch to previous word in caret browsing.'''
         if self.caret_browsing_mode:
             self.buffer_widget.eval_js("CaretBrowsing.move('backward', 'documentboundary');")
 
-    @interactive()
+    @interactive
     def caret_rotate_selection(self):
         ''' Rotate selection.'''
         if self.caret_browsing_mode:
             if self.caret_browsing_mark_activated:
                 self.buffer_widget.eval_js("CaretBrowsing.rotateSelection();")
 
-    @interactive()
+    @interactive
     def caret_toggle_mark(self):
         ''' Toggle mark in caret browsing.'''
         if self.caret_browsing_mode:
@@ -1234,7 +1235,7 @@ class BrowserBuffer(Buffer):
                 self.caret_browsing_mark_activated = False
                 self.message_to_emacs.emit("Caret Mark deactivated")
 
-    @interactive()
+    @interactive
     def caret_clear_search(self):
         ''' Clear search text in caret browsing.'''
         if self.caret_browsing_mode:
@@ -1242,7 +1243,7 @@ class BrowserBuffer(Buffer):
                 self.caret_browsing_search_text = ""
                 self.message_to_emacs.emit("Cleared caret search text.")
 
-    @interactive()
+    @interactive
     def caret_search_forward(self):
         ''' Search Text forward in caret browsing.'''
         if self.caret_browsing_mode:
@@ -1252,7 +1253,7 @@ class BrowserBuffer(Buffer):
                 else:
                     self._caret_search_text(self.caret_browsing_search_text)
 
-    @interactive()
+    @interactive
     def caret_search_backward(self):
         ''' Search Text backward in caret browsing.'''
         if self.caret_browsing_mode:
@@ -1272,7 +1273,7 @@ class BrowserBuffer(Buffer):
             if not self.buffer_widget.execute_js("window.find('"+text+"')"):
                 self.message_to_emacs.emit("Unable to find more, please try backward search.")
 
-    @interactive()
+    @interactive
     def caret_translate_text(self):
         if self.buffer_widget.selectedText().strip() != "":
             self.buffer_widget.translate_selected_text.emit(self.buffer_widget.selectedText())
@@ -1288,7 +1289,7 @@ class BrowserBuffer(Buffer):
         self.buffer_widget.copy_text()
         self.message_to_emacs.emit("Copied selected text.")
 
-    @interactive()
+    @interactive
     def copy_code(self):
         ''' Copy code.'''
         self.buffer_widget.get_code_markers()
@@ -1323,7 +1324,7 @@ class BrowserBuffer(Buffer):
         self.buffer_widget.get_link_markers()
         self.send_input_message("Open Link in Background Buffer: ", "jump_link_background_buffer");
 
-    @interactive()
+    @interactive
     def copy_link(self):
         ''' Copy link.'''
         self.buffer_widget.get_link_markers()
@@ -1382,7 +1383,7 @@ class BrowserBuffer(Buffer):
 
             self.history_list.sort(key = lambda x: x.hit, reverse = True)
 
-            with open(self.history_log_file_path, "w") as f:
+            with open(self.history_log_file_path, "w", encoding="utf-8") as f:
                 f.writelines(map(lambda history: history.title + "ᛝ" + history.url + "ᛡ" + str(history.hit) + "\n", self.history_list))
         except Exception:
             import traceback
@@ -1407,7 +1408,7 @@ class BrowserBuffer(Buffer):
         else:
             self.message_to_emacs.emit("There is no browsing history.")
 
-    @interactive()
+    @interactive
     def clear_history(self):
         ''' Clear browsing history.'''
         self.send_input_message("Are you sure you want to clear all browsing history?", "clear_history", "yes-or-no")
@@ -1441,12 +1442,12 @@ class BrowserBuffer(Buffer):
             self.message_to_emacs.emit("Importing {} / {} ...".format(i, total))
         self.message_to_emacs.emit("{} chrome history entries imported.".format(total))
 
-    @interactive()
+    @interactive
     def import_chrome_history(self):
         ''' Import history entries from chrome history db.'''
         self.send_input_message("Are you sure you want to import all history from chrome?", "import_chrome_history", "yes-or-no")
 
-    @interactive()
+    @interactive
     def clear_cookies(self):
         ''' Clear cookies.'''
         self.send_input_message("Are you sure you want to clear all browsing cookies?", "clear_cookies", "yes-or-no")

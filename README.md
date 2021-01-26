@@ -62,18 +62,21 @@ EAF is an extensible framework, one can develop any Qt5 application and integrat
 ## Install
 1. Download EAF
 ```Bash
-git clone https://github.com/manateelazycat/emacs-application-framework.git --depth=1 ~/.emacs.d/site-lisp/emacs-application-framework/
+git clone --depth=1 -b master https://github.com/manateelazycat/emacs-application-framework.git ~/.emacs.d/site-lisp/emacs-application-framework/
 ```
-or you can use a [Quelpa recipe](https://github.com/quelpa/quelpa)
+
+Alternatively, you can use a [Quelpa recipe](https://github.com/quelpa/quelpa)
 ```Emacs-lisp
 (quelpa '(eaf (:fetcher github
                :repo  "manateelazycat/emacs-application-framework"
                :files ("*"))))
 ```
 
-2. Install EAF dependencies. An explanation of each dependency can be found in [Dependency List](#dependency-list).
-- `M-x install-eaf-dependencies`
-- or run `install-eaf.sh`:
+2. Install EAF dependencies using `M-x install-eaf-dependencies`.
+
+If you prefer to manually call the installation script in the terminal,
+
+- If you use GNU/Linux,
 
 ```Bash
 cd emacs-application-framework
@@ -81,7 +84,21 @@ chmod +x ./install-eaf.sh
 ./install-eaf.sh
 ```
 
-3. From here on, you can either add the full path to the EAF installation directory to your Emacs ```load-path```, then add the following to `init.el`:
+- If you use Windows,
+
+```shell
+cd emacs-application-framework
+node ./install-eaf-win32.js
+```
+
+Feel free to inspect the install script yourself. An explanation of each dependency can be found at [Dependency List](#dependency-list).
+
+3. Install Elisp packages:
+- [emacs-ctable](https://github.com/kiwanami/emacs-ctable)
+- [emacs-deferred](https://github.com/kiwanami/emacs-deferred)
+- [emacs-epc](https://github.com/kiwanami/emacs-epc)
+
+4. From here on, you can either add the full path to the EAF installation directory to your Emacs ```load-path```, then add the following to `init.el`:
 
 ```Elisp
 (add-to-list 'load-path "~/.emacs.d/site-lisp/emacs-application-framework/")
@@ -92,6 +109,10 @@ or, if you use [use-package](https://github.com/jwiegley/use-package), you can u
 ```Elisp
 (use-package eaf
   :load-path "~/.emacs.d/site-lisp/emacs-application-framework" ; Set to "/usr/share/emacs/site-lisp/eaf" if installed from AUR
+  :init
+  (use-package epc :defer t)
+  (use-package ctable :defer t)
+  (use-package deferred :defer t)
   :custom
   (eaf-browser-continue-where-left-off t)
   :config
@@ -109,13 +130,11 @@ Packages listed as **Core** are mandatory for EAF to work, whereas other package
 | Package                        | Dependent                            | Description                                   |
 | :--------                      | :------                              | :------                                       |
 | python-pyqt5, python-pyqt5-sip | Core                                 | Essential GUI library                         |
-| python-dbus                    | Core                                 | DBus IPC to connect Python with Elisp         |
 | python-pyqtwebengine           | Core                                 | Chromium based web rendering engine           |
 | wmctrl                         | Core                                 | Activate Emacs window input focus             |
 | python-pymupdf                 | PDF Viewer                           | PDF rendering engine                          |
 | python-grip                    | Markdown Previewer                   | Markdown rendering server                     |
 | python-qrcode                  | File Sender, File Receiver, Airshare | Render QR code pointing to local files        |
-| python-pyinotify               | Mermaid                              | Monitor *.mmd file change status              |
 | python-markdown                | Mermaid                              | Covert markdown format to mermaid html format |
 | nodejs                         | Terminal                             | Communicate between browser and local TTY     |
 | aria2                          | Browser                              | Download files from the web                   |
@@ -147,12 +166,6 @@ Packages listed as **Core** are mandatory for EAF to work, whereas other package
 
 - EAF Browser and PDF Viewer support Emacs built-in bookmark operation, with `M-x bookmark-set` (defaulted to `C-x r m`) and `M-x bookmark-bmenu-list` (defaulted to `C-x r l`).
 
-```
-NOTE:
-EAF use DBus' session bus, it must run by a general user.
-Please don't use EAF when Emacs is started with sudo or root user, a root user can only access DBus's system bus.
-```
-
 ## Wiki
 
 It is **highly** suggested to read the [Wiki](https://github.com/manateelazycat/emacs-application-framework/wiki) first before using EAF.
@@ -170,7 +183,7 @@ There also are some helpful tips to make EAF work with Docker, Helm, etc.
 ### How does EAF work?
 EAF implements three major functionalities:
 1. Integrate PyQt program window into Emacs frame using QWindow Reparent technology.
-2. Listen to EAF buffer's keyboard event flow and control the keyboard input of PyQt program via DBus IPC.
+2. Listen to EAF buffer's keyboard event flow and control the keyboard input of PyQt program via Python EPC.
 3. Create a window compositer to make a PyQt program window adapt Emacs's Window/Buffer design.
 
 Learn more from the [Wiki](https://github.com/manateelazycat/emacs-application-framework/wiki/Hacking)!
@@ -184,9 +197,9 @@ Learn more from the [Wiki](https://github.com/manateelazycat/emacs-application-f
 
 Both projects are similar in terms of interface, but they are two completely different projects with different goals in mind. Sometimes one may find EAF is more suitable than EXWM, sometimes it's the other way around. Please do not meaninglessly compare them.
 
-### EAF is (currently) Linux only. Why?
-1. DBus is Linux-specific technology, it's difficult to support DBus in other operating systems.
-2. Qt5's QGraphicsScene technology does not work on MacOS.
+### EAF can't works on MacOS. Why?
+1. Qt5's QGraphicsScene technology does not work on MacOS.
+2. QWindow Reparent technology need use the original API of Mac platform for replacement.
 
 If you've figure them out, PRs are always welcome!
 
@@ -196,11 +209,6 @@ EAF confirms that the desktop environment or window manager you can work include
 We suspect there are some issues with how all the Window Managers implement their x11 protocols.
 
 One workaround is to name of command `wmctrl -m` to the elisp list `eaf-wm-focus-fix-wms`. Fill an issue if it still doesn't work.
-
-### `[EAF] *eaf* aborted (core dumped)` error
-Please check the `*eaf*` buffer, something is wrong on the Python side. Usually due to Python dependencies are not installed correctly.
-
-If you're sure Python dependences are installed correctly, please create an issue with the `*eaf*` buffer content, it contains many clues that can help us locate the problem faster.
 
 ### What is Github Personal Access Tokens?
 If you use EAF Markdown Previewer, to get consistent previewing, you need to access [Github Personal access token site](https://github.com/settings/tokens/new?scopes=), fill something in "Token description" and click button "Generate token" to get your personal token. Then set the token:
@@ -236,11 +244,13 @@ If we missed your package, please make a PR to add it to the list.
 
 ## Report bug
 
-For any installation and configuration assistance, please read the [Wiki](https://github.com/manateelazycat/emacs-application-framework/wiki) first!
+### For any installation and configuration assistance, please read the [Wiki](https://github.com/manateelazycat/emacs-application-framework/wiki) first!
 
-If you encounter any problem with EAF, please use command `emacs -q` with a minimal setup that only contains EAF and verify the bug is reproducible. If `emacs -q` works fine, probably something is wrong with your Emacs config.
+If you encounter a problem with EAF, and it occured after pulling the latest commit, please check the [Discussions](https://github.com/manateelazycat/emacs-application-framework/discussions/527) page first.
 
-If the problem persists, please [report bug here](https://github.com/manateelazycat/emacs-application-framework/issues/new).
+For any other problems, please use `emacs -q` and load a minimal setup with only EAF to verify that the bug is reproducible. If `emacs -q` works fine, probably something is wrong with your Emacs config.
+
+If the problem persists, please report it [here](https://github.com/manateelazycat/emacs-application-framework/issues/new) with `*eaf*` buffer content, it contains many clues that can help us locate the problem faster.
 
 If you got segfault error, please use the following way to collect crash information:
 1. Install gdb and turn on option `eaf-enable-debug`

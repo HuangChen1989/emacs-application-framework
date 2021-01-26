@@ -7,7 +7,7 @@
 ;; Copyright (C) 2018, Andy Stewart, all rights reserved.
 ;; Created: 2020-05-17 12:31:12
 ;; Version: 0.5
-;; Last-Updated: Tue Jan 19 01:15:08 2021 (-0500)
+;; Last-Updated: Wed Jan 20 05:34:13 2021 (-0500)
 ;;           By: Mingde (Matthew) Zeng
 ;; URL: https://github.com/manateelazycat/emacs-application-framework
 ;; Keywords:
@@ -55,6 +55,28 @@ Enable this when the you want to ensure the PDF link in the org file can be
   :safe #'booleanp
   :group 'org-link)
 
+(defun eaf-org-export-to-pdf-and-open ()
+  "Run `org-latex-export-to-pdf', delete the tex file and `eaf-open' pdf in a new buffer."
+  (interactive)
+  (with-current-buffer (current-buffer)
+    (when (derived-mode-p 'org-mode)
+      (save-buffer)
+      (let* ((pdf-name (file-name-nondirectory (file-name-sans-extension (buffer-file-name))))
+             (pdf-name-with-ext (concat pdf-name ".pdf"))
+             (eaf-pdf-buffer (get-buffer pdf-name-with-ext))
+             (pdf-full-path (concat (file-name-directory (buffer-file-name)) pdf-name-with-ext)))
+        (let ((exported (org-latex-export-to-pdf)))
+          (message (concat "Trying to open " pdf-name-with-ext))
+          (delete-file (concat pdf-name ".tex"))
+          (delete-other-windows)
+          (split-window-right)
+          (other-window 1)
+          (if (and eaf-pdf-buffer
+                   (with-current-buffer eaf-pdf-buffer
+                     (derived-mode-p 'eaf-mode)))
+              (switch-to-buffer eaf-pdf-buffer)
+            (eaf-open pdf-full-path)))))))
+
 (defvar eaf-org-override-pdf-links-list
   '("docview" "pdfview" "pdftools")
   "A list of all PDF file link types which will be override by EAF open function.")
@@ -78,9 +100,9 @@ The raw link looks like this: [[eaf:<app>::<path>::<extra-args>][description]]"
                   eaf--buffer-url))
            (extra-args (cl-case (intern app)
                          ('pdf-viewer
-                          (eaf-call "call_function" eaf--buffer-id "current_page"))
+                          (eaf-call-sync "call_function" eaf--buffer-id "current_page"))
                          ('js-video-player
-                          (eaf-call "call_function" eaf--buffer-id "save_session_data"))))
+                          (eaf-call-sync "call_function" eaf--buffer-id "save_session_data"))))
            (link (if extra-args
                      (concat "eaf:" app "::" url "::" extra-args)
                    (concat "eaf:" app "::" url)))
@@ -118,13 +140,13 @@ The raw link looks like this: [[eaf:<app>::<path>::<extra-args>][description]]"
            (eaf-open url "browser"))
           ('pdf-viewer
            (eaf-open url "pdf-viewer")
-           (eaf-call "call_function_with_args" eaf--buffer-id
+           (eaf-call-sync "call_function_with_args" eaf--buffer-id
                      "jump_to_page_with_num" (format "%s" extra-args)))
           ('mindmap
            (eaf-open url "mindmap"))
           ('js-video-player
            (eaf-open url "js-video-player")
-           (eaf-call "call_function_with_args" eaf--buffer-id
+           (eaf-call-sync "call_function_with_args" eaf--buffer-id
                      "restore_session_data" (format "%s" extra-args)))
           (t (eaf-open url))))
     ;; for other link types spec: "<link-type>:URL:(parameters)"
@@ -137,7 +159,7 @@ The raw link looks like this: [[eaf:<app>::<path>::<extra-args>][description]]"
          (if eaf-org-override-pdf-links
              (progn (eaf-open (expand-file-name url) "pdf-viewer")
                     (when extra-args
-                      (eaf-call "call_function_with_args" eaf--buffer-id
+                      (eaf-call-sync "call_function_with_args" eaf--buffer-id
                                 "jump_to_page_with_num" (format "%s" extra-args))))
            (dolist (type eaf-org-override-pdf-links-list)
              ;; restore to original :follow function, since eaf-org-override-pdf-links is nil

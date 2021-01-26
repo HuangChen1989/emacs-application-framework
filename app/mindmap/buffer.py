@@ -41,8 +41,8 @@ class AppBuffer(BrowserBuffer):
         BrowserBuffer.__init__(self, buffer_id, url, config_dir, arguments, emacs_var_dict, module_path, False)
 
         self.url = url
-        index_file = "file://" + (os.path.join(os.path.dirname(__file__), "index.html"))
-        self.buffer_widget.setUrl(QUrl(index_file))
+        index_file = os.path.join(os.path.dirname(__file__), "index.html")
+        self.buffer_widget.setUrl(QUrl.fromLocalFile(index_file))
 
         self.cut_node_id = None
 
@@ -98,7 +98,7 @@ class AppBuffer(BrowserBuffer):
                 self.save_file(False)
         setattr(self, method_name, _do)
 
-    @interactive()
+    @interactive
     def refresh_page(self):
         self.url = os.path.expanduser(self.url)
 
@@ -210,15 +210,15 @@ class AppBuffer(BrowserBuffer):
         else:
             self.get_middle_node_id.emit(self.buffer_id)
 
-    @interactive()
+    @interactive
     def add_texted_sub_node(self,text):
         self.buffer_widget.eval_js("add_texted_sub_node('{}');".format(str(text)))
 
-    @interactive()
+    @interactive
     def add_texted_brother_node(self,text):
         self.buffer_widget.eval_js("add_texted_brother_node('{}');".format(str(text)))
 
-    @interactive()
+    @interactive
     def add_texted_middle_node(self,text):
         self.buffer_widget.eval_js("add_texted_middle_node('{}');".format(str(text)))
 

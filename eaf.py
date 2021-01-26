@@ -23,55 +23,65 @@
 # QtWebEngine will throw error "ImportError: QtWebEngineWidgets must be imported before a QCoreApplication instance is created"
 # So we import browser module before start Qt application instance to avoid this error, but we never use this module.
 from app.browser.buffer import AppBuffer as NeverUsed # noqa
-from sys import version_info
 
 from PyQt5 import QtWidgets
 from PyQt5.QtCore import QLibraryInfo, QTimer
 from PyQt5.QtNetwork import QNetworkProxy
 from PyQt5.QtWidgets import QApplication
+from core.utils import PostGui
 from core.view import View
-from dbus.mainloop.glib import DBusGMainLoop
-import dbus
-import dbus.service
+from epc.server import ThreadingEPCServer
+from sys import version_info
 import importlib
 import json
+import logging
 import os
-import subprocess
 import socket
+import subprocess
+import threading
 
-EAF_DBUS_NAME = "com.lazycat.eaf"
-EAF_OBJECT_NAME = "/com/lazycat/eaf"
-
-def connect():
-    conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    conn.connect(('127.0.0.1', 9999))
-    return conn
-
-class EAF(dbus.service.Object):
+class EAF(object):
     def __init__(self, args):
         global emacs_width, emacs_height, eaf_config_dir, proxy_string
 
-        dbus.service.Object.__init__(
-            self,
-            dbus.service.BusName(EAF_DBUS_NAME, bus=dbus.SessionBus()),
-            EAF_OBJECT_NAME)
-
-        (emacs_width, emacs_height, proxy_host, proxy_port, proxy_type, config_dir, var_dict_string) = args
+        # Parse init arguments.
+        (emacs_width, emacs_height, proxy_host, proxy_port, proxy_type, config_dir, emacs_server_port, var_dict_string) = args
         emacs_width = int(emacs_width)
         emacs_height = int(emacs_height)
         eaf_config_dir = os.path.join(os.path.expanduser(config_dir), '')
 
+        # Init variables.
         self.buffer_dict = {}
         self.view_dict = {}
         self.emacs_var_dict = {}
+        self.session_file = os.path.join(eaf_config_dir, "session.json")
 
+        # Update Emacs var dictionary.
         self.update_emacs_var_dict(var_dict_string)
 
-        self.elisp_connect = connect()
+        # Build EPC server.
+        self.server = ThreadingEPCServer(('localhost', 0), log_traceback=True)
+        self.server.logger.setLevel(logging.DEBUG)
+        self.server.allow_reuse_address = True
 
-        self.first_start(self.webengine_include_private_codec())
+        if not os.path.exists(eaf_config_dir):
+            os.makedirs(eaf_config_dir);
 
-        self.session_file = os.path.join(eaf_config_dir, "session.json")
+        ch = logging.FileHandler(filename=os.path.join(eaf_config_dir, 'epc_log.txt'), mode='w')
+        ch.setLevel(logging.DEBUG)
+        self.server.logger.addHandler(ch)
+
+        self.server.register_instance(self) # register instance functions let elisp side call
+
+        # Start EPC server with sub-thread, avoid block Qt main loop.
+        self.server_thread = threading.Thread(target=self.server.serve_forever)
+        self.server_thread.start()
+
+        # Build emacs server connect, used to send message from Python to elisp side.
+        self.emacs_server_connect = self.build_emacs_server_connect(int(emacs_server_port))
+
+        # Pass epc port and webengine codec information to Emacs when first start EAF.
+        self.first_start(self.server.server_address[1], self.webengine_include_private_codec())
 
         # Set Network proxy.
         if proxy_host != "" and proxy_port != "":
@@ -87,6 +97,11 @@ class EAF(dbus.service.Object):
             proxy.setPort(int(proxy_port))
             QNetworkProxy.setApplicationProxy(proxy)
 
+    def build_emacs_server_connect(self, port):
+        conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        conn.connect(('127.0.0.1', port))
+        return conn
+
     def get_command_result(self, command):
         ''' Execute the command and return the result. '''
         if version_info >= (3,7):
@@ -99,7 +114,7 @@ class EAF(dbus.service.Object):
         path = os.path.join(QLibraryInfo.location(QLibraryInfo.LibraryExecutablesPath), "QtWebEngineProcess")
         return self.get_command_result("ldd {} | grep libavformat".format(path)) != ""
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="s", out_signature="")
+    @PostGui()
     def update_emacs_var_dict(self, var_dict_string):
         ''' Update Python side emacs_var_dict.(Fix issue #206) '''
         self.emacs_var_dict = json.loads(var_dict_string)
@@ -107,14 +122,12 @@ class EAF(dbus.service.Object):
         for buffer in list(self.buffer_dict.values()):
             buffer.emacs_var_dict = self.emacs_var_dict
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="ssss", out_signature="s")
+    @PostGui()
     def new_buffer(self, buffer_id, url, app_name, arguments):
         ''' Create new buffer. '''
-        # NOTE: We need use function str convert dbus.String to String,
-        # otherwise some library will throw error, such as fitz library.
-        return self.create_app(buffer_id, str(url), "app.{0}.buffer".format(str(app_name)), str(arguments))
+        self.create_app(buffer_id, str(url), "app.{0}.buffer".format(str(app_name)), str(arguments))
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="sss", out_signature="")
+    @PostGui()
     def update_buffer_with_url(self, module_path, buffer_url, update_data):
         ''' Update buffer with url '''
         for buffer in list(self.buffer_dict.values()):
@@ -122,7 +135,7 @@ class EAF(dbus.service.Object):
                 buffer.update_with_data(update_data)
                 break
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="sss", out_signature="")
+    @PostGui()
     def scroll_other_buffer(self, view_info, scroll_direction, scroll_type):
         ''' Scroll to other buffer '''
         (buffer_id, _, _, _, _) = view_info.split(":")
@@ -264,7 +277,7 @@ class EAF(dbus.service.Object):
 
         return app_buffer
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="s", out_signature="")
+    @PostGui()
     def update_views(self, args):
         ''' Update views.'''
         view_infos = args.split(",")
@@ -327,7 +340,7 @@ class EAF(dbus.service.Object):
                 # Send resize signal to buffer.
                 buffer.resize_view()
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="", out_signature="")
+    @PostGui()
     def kill_emacs(self):
         ''' Kill all buffurs from buffer dict.'''
         tmp_buffer_dict = {}
@@ -337,7 +350,7 @@ class EAF(dbus.service.Object):
         for buffer_id in tmp_buffer_dict:
             self.kill_buffer(buffer_id)
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="s", out_signature="")
+    @PostGui()
     def kill_buffer(self, buffer_id):
         ''' Kill all view based on buffer_id and clean buffer from buffer dict.'''
         # Kill all view base on buffer_id.
@@ -354,7 +367,7 @@ class EAF(dbus.service.Object):
             self.buffer_dict[buffer_id].destroy_buffer()
             self.buffer_dict.pop(buffer_id, None)
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="sss", out_signature="")
+    @PostGui()
     def execute_function(self, buffer_id, function_name, event_string):
         ''' Execute function and do not return anything. '''
         if buffer_id in self.buffer_dict:
@@ -367,7 +380,6 @@ class EAF(dbus.service.Object):
                 traceback.print_exc()
                 self.message_to_emacs("Cannot execute function: " + function_name + " (" + buffer_id + ")")
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="ss", out_signature="s")
     def call_function(self, buffer_id, function_name):
         ''' Call function and return the result. '''
         if buffer_id in self.buffer_dict:
@@ -379,58 +391,59 @@ class EAF(dbus.service.Object):
                 self.message_to_emacs("Cannot call function: " + function_name)
                 return ""
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="sss", out_signature="s")
-    def call_function_with_args(self, buffer_id, function_name, args_string):
+    def call_function_with_args(self, buffer_id, function_name, *args, **kwargs):
         ''' Call function with arguments and return the result. '''
         if buffer_id in self.buffer_dict:
             try:
-                return str(self.buffer_dict[buffer_id].call_function_with_args(function_name, args_string))
+                return str(self.buffer_dict[buffer_id].call_function_with_args(function_name, *args, **kwargs))
             except AttributeError:
                 import traceback
                 traceback.print_exc()
                 self.message_to_emacs("Cannot call function: " + function_name)
                 return ""
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="s", out_signature="")
+    @PostGui()
     def action_quit(self, buffer_id):
         ''' Execute action_quit() for specified buffer.'''
         if buffer_id in self.buffer_dict:
             self.buffer_dict[buffer_id].action_quit()
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="ss", out_signature="")
+    @PostGui()
     def send_key(self, buffer_id, event_string):
         ''' Send event to buffer when found match buffer.'''
         if buffer_id in self.buffer_dict:
             self.buffer_dict[buffer_id].fake_key_event(event_string)
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="ss", out_signature="")
+    @PostGui()
     def send_key_sequence(self, buffer_id, event_string):
         ''' Send event to buffer when found match buffer.'''
         if buffer_id in self.buffer_dict:
             self.buffer_dict[buffer_id].fake_key_sequence(event_string)
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="sss", out_signature="")
+    @PostGui()
     def handle_input_response(self, buffer_id, callback_tag, callback_result):
         ''' Handle input message for specified buffer.'''
         for buffer in list(self.buffer_dict.values()):
             if buffer.buffer_id == buffer_id:
                 buffer.handle_input_response(callback_tag, callback_result)
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="ss", out_signature="")
+    @PostGui()
     def cancel_input_response(self, buffer_id, callback_tag):
         ''' Cancel input message for specified buffer.'''
         for buffer in list(self.buffer_dict.values()):
             if buffer.buffer_id == buffer_id:
                 buffer.cancel_input_response(callback_tag)
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="ss", out_signature="")
+    @PostGui()
     def update_focus_text(self, buffer_id, new_text):
         ''' Update focus text for specified buffer.'''
+        import base64
+
         for buffer in list(self.buffer_dict.values()):
             if buffer.buffer_id == buffer_id:
-                buffer.set_focus_text(new_text)
+                buffer.set_focus_text(base64.b64decode(new_text).decode("utf-8"))
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="ss", out_signature="")
+    @PostGui()
     def update_multiple_sub_nodes(self, buffer_id, new_text):
         ''' Update multiplt sub nodes.'''
         for buffer in list(self.buffer_dict.values()):
@@ -438,7 +451,7 @@ class EAF(dbus.service.Object):
                 for line in str(new_text).split("\n"):
                     buffer.add_texted_sub_node(line)
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="ss", out_signature="")
+    @PostGui()
     def update_multiple_brother_nodes(self, buffer_id, new_text):
         ''' Update multiplt brother nodes.'''
         for buffer in list(self.buffer_dict.values()):
@@ -446,7 +459,7 @@ class EAF(dbus.service.Object):
                 for line in str(new_text).split("\n"):
                     buffer.add_texted_brother_node(line)
 
-    @dbus.service.method(EAF_DBUS_NAME, in_signature="ss", out_signature="")
+    @PostGui()
     def update_multiple_middle_nodes(self, buffer_id, new_text):
         ''' Update multiplt middle nodes.'''
         for buffer in list(self.buffer_dict.values()):
@@ -454,17 +467,17 @@ class EAF(dbus.service.Object):
                 for line in str(new_text).split("\n"):
                     buffer.add_texted_middle_node(line)
 
-    def eval_in_emacs(self, fname, fargs_list):
-        code = "(" + str(fname)
-        for farg in fargs_list:
-            arg = str(farg).replace('"', '\\"')
-            if len(arg) > 0 and arg[0] == ">":
-                arg = arg[1:]
-            elif len(arg) == 0 or arg[0] != "'":
-                arg = '"' + arg + '"'
-            code = code + ' ' + arg
+    def eval_in_emacs(self, method_name, args_list):
+        code = "(" + str(method_name)
+        for arg in args_list:
+            arg = str(arg)
+            if len(arg) > 0 and arg[0] == "'":
+                code += " {}".format(arg)
+            else:
+                code += " \"{}\"".format(arg)
         code += ")"
-        self.elisp_connect.send(str.encode(code))
+
+        self.emacs_server_connect.send(str.encode(code))
 
     def add_multiple_sub_nodes(self, buffer_id):
         self.eval_in_emacs('eaf--add-multiple-sub-nodes', [buffer_id])
@@ -478,8 +491,8 @@ class EAF(dbus.service.Object):
     def focus_emacs_buffer(self, message):
         self.eval_in_emacs('eaf-focus-buffer', [message])
 
-    def first_start(self, webengine_include_private_codec):
-        self.eval_in_emacs('eaf--first-start', [webengine_include_private_codec])
+    def first_start(self, port, webengine_include_private_codec):
+        self.eval_in_emacs('eaf--first-start', [port, webengine_include_private_codec])
 
     def update_buffer_details(self, buffer_id, title, url):
         self.eval_in_emacs('eaf--update-buffer-details', [buffer_id, title, url])
@@ -603,20 +616,14 @@ if __name__ == "__main__":
 
     proxy_string = ""
 
-    DBusGMainLoop(set_as_default=True) # WARING: only use once in one process
+    emacs_width = emacs_height = 0
+    eaf_config_dir = ""
 
-    bus = dbus.SessionBus()
-    if bus.request_name(EAF_DBUS_NAME) != dbus.bus.REQUEST_NAME_REPLY_PRIMARY_OWNER:
-        print("EAF process is already running.")
-    else:
-        emacs_width = emacs_height = 0
-        eaf_config_dir = ""
+    app = QApplication(sys.argv + ["--disable-web-security"])
 
-        app = QApplication(sys.argv + ["--disable-web-security"])
+    eaf = EAF(sys.argv[1:])
 
-        eaf = EAF(sys.argv[1:])
+    print("EAF process starting...")
 
-        print("EAF process starting...")
-
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
-        sys.exit(app.exec_())
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    sys.exit(app.exec_())

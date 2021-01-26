@@ -61,13 +61,21 @@ EAF是一个可编程扩展的框架，你可以开发自己的Qt5应用并集�
 ## 安装
 1. 下载EAF:
 ```Bash
-git clone https://github.com/manateelazycat/emacs-application-framework.git --depth=1 ~/.emacs.d/site-lisp/emacs-application-framework/
+git clone --depth=1 -b master https://github.com/manateelazycat/emacs-application-framework.git ~/.emacs.d/site-lisp/emacs-application-framework/
 ```
 
-2. 安装EAF依赖，对于每个依赖的解释可以在[依赖列表](#依赖列表)找到。
+你也可以通过[Quelpa](https://github.com/quelpa/quelpa)来下载
+```Emacs-lisp
+(quelpa '(eaf (:fetcher github
+               :repo  "manateelazycat/emacs-application-framework"
+               :files ("*"))))
+```
 
-- `M-x install-eaf-dependencies`
-- 或者，手动调用安装脚本:
+2. 通过`M-x install-eaf-dependencies`安装EAF依赖，
+
+如果你更喜欢手动执行安装脚本，
+
+- GNU/Linux用户：
 
 ```Bash
 cd emacs-application-framework
@@ -75,7 +83,22 @@ chmod +x ./install-eaf.sh
 ./install-eaf.sh
 ```
 
-3. 从这里开始，你可以把EAF加入Emacs的 ```load-path```，然后在 `init.el` 中写入:
+- Windows用户：
+
+```shell
+>>>>>>> Update README and eaf-install-dependencies (need Windows testing)
+cd emacs-application-framework
+node ./install-eaf-win32.js
+```
+
+脚本里安装的每一个依赖的解释可以在[依赖列表](#依赖列表)找到。
+
+3. 安装Elisp依赖包:
+- [emacs-ctable](https://github.com/kiwanami/emacs-ctable)
+- [emacs-deferred](https://github.com/kiwanami/emacs-deferred)
+- [emacs-epc](https://github.com/kiwanami/emacs-epc)
+
+4. 从这里开始，你可以把EAF加入Emacs的 ```load-path```，然后在 `init.el` 中写入:
 
 ```Elisp
 (add-to-list 'load-path "~/.emacs.d/site-lisp/emacs-application-framework/")
@@ -87,6 +110,10 @@ chmod +x ./install-eaf.sh
 ```Elisp
 (use-package eaf
   :load-path "~/.emacs.d/site-lisp/emacs-application-framework" ; Set to "/usr/share/emacs/site-lisp/eaf" if installed from AUR
+  :init
+  (use-package epc :defer t)
+  (use-package ctable :defer t)
+  (use-package deferred :defer t)
   :custom
   (eaf-browser-continue-where-left-off t)
   :config
@@ -103,13 +130,11 @@ chmod +x ./install-eaf.sh
 | 包名                           | 依赖                         | 解释                                     |
 | :--------                      | :------                      | :------                                  |
 | python-pyqt5, python-pyqt5-sip | 核心                         | GUI图形库                                |
-| python-dbus                    | 核心                         | DBus库，用于在Emacs和Python进程间通讯    |
 | python-pyqtwebengine           | 核心                         | 基于Chromium的浏览器引擎                 |
 | wmctrl           | 核心                         | 激活Emacs窗口输入焦点                 |
 | python-pymupdf                 | PDF阅读器                    | 解析PDF文件                              |
 | python-grip                    | Markdown预览                 | 建立Markdown文件的HTML服务               |
 | python-qrcode                  | 文件上传，文件下载，文字传输 | 根据文件信息生成二维码                   |
-| python-pyinotify               | 流程图                       | 监听 mmd 格式文件的变动                  |
 | python-markdown                | 流程图                       | 转换 mmd 格式为 mermaid 识别的 html 格式 |
 | aria2                          | 浏览器                       | 下载网络文件                             |
 | nodejs                         | 终端模拟器                   | 通过浏览器与本地TTY交互                  |
@@ -141,11 +166,6 @@ chmod +x ./install-eaf.sh
 
 - EAF浏览器以及PDF浏览器支持Emacs内置书签操作，通过使用`M-x bookmark-set`（默认`C-x r m`）以及`M-x bookmark-bmenu-list`（默认`C-x r l`）。
 
-```
-注意：
-EAF使用DBus的普通权限总线 (session bus)，请不要用 sudo 来启动EAF，root用户只能访问系统权限总线 (system bus)
-```
-
 ## Wiki
 强烈建议使用EAF之前浏览一遍[Wiki](https://github.com/manateelazycat/emacs-application-framework/wiki)。
 
@@ -162,7 +182,7 @@ Wiki囊括了各种你想了解的EAF相关文档，包括了：
 ### EAF是怎么工作的？
 EAF主要实现这几个功能：
 1. 利用QWindow的Reparent技术来实现PyQt应用进程的窗口粘贴到Emacs对应的Buffer区域
-2. 通过DBus IPC来实现Emacs进程和Python进程的控制指令和跨进程消息通讯
+2. 通过Python EPC来实现Emacs进程和Python进程的控制指令和跨进程消息通讯
 3. 通过Qt5的QGraphicsScene来实现镜像窗口，以对应Emacs的Buffer/Window模型
 
 若想了解更多EAF设计背景，请看[Wiki](https://github.com/manateelazycat/emacs-application-framework/wiki/Hacking)
@@ -177,11 +197,9 @@ EAF主要实现这几个功能：
 
 或许EAF和EXWM看起来有点相似，但它们在设计和理念上是两个完全不同的项目。所以请大家多多学习X11和Qt的区别，理解技术的本质，避免无意义的比较和争论。
 
-### 为什么EAF只能在Linux下工作？
-1. DBus是Linux下专用的进程间通讯技术，其他操作系统可能无法支持DBus
-2. Qt5的QGraphicsScene技术无法在MacOS下正常工作，也就无法实现Qt5应用的镜像窗口以支持Emacs的Buffer/Window模型
-
-欢迎操作系统级别黑客移植EAF，目前为止，我知道的主要的迁移障碍就只有两个：DBus，QGraphicsScene
+### 为什么EAF无法在MacOS下工作？
+1. Qt5的QGraphicsScene技术无法在MacOS下正常工作，也就无法实现Qt5应用的镜像窗口以支持Emacs的Buffer/Window模型
+2. QWindow Reparent技术无法在MacOS下正常工作，也就无法实现Qt应用进程的窗口粘贴到Emacs对应的Buffer区域
 
 ### 为什么通过窗口管理器使用EAF无法接收输入信息？
 EAF确认可以工作的桌面环境或者窗口管理器包括：KDE、Gnome2、Gnome3、Mate、XFce、LXDE、i3、QTile、Xpra.
@@ -189,9 +207,6 @@ EAF确认可以工作的桌面环境或者窗口管理器包括：KDE、Gnome2�
 我们认为不同的窗口管理器对于X11协议的支持不够完善才导致这样的问题。
 
 现在的解决方案是将命令`wmctrl -m`中Name的值加入`eaf-wm-focus-fix-wms`，如果还有问题，请在Github提出issue。
-
-### `[EAF] *eaf* aborted (core dumped)` 奔溃了怎么办？
-请检查 `*eaf*` 这个窗口的内容。通常是EAF的Python依赖没有安装好，如果你确定依赖没有问题，请附带 `*eaf*` 窗口的内容给我们提交issue，那里面有很多线索可以帮助我们排查问题。
 
 ### Github 个人访问标记干什么用的？
 Markdown预览程序依赖grip，你需要访问[Github Personal access token](https://github.com/settings/tokens/new?scopes=)去获取你个人的标记，然后通过下面的命令设置标记后，grip才能正常的工作：
@@ -227,9 +242,11 @@ Markdown预览程序依赖grip，你需要访问[Github Personal access token](h
 
 ### 反馈安装和配置问题之前，请一定先阅读[Wiki](https://github.com/manateelazycat/emacs-application-framework/wiki)!!!
 
-如果你遇到任何问题，请先用命令 `emacs -q` 并只添加EAF配置，做一个对比测试，如果 `emacs -q` 的时候可以工作，请检查你个人的配置文件。
+如果你使用中遇到任何问题，并且问题是`git pull`后出现的，请先阅读[Discussions](https://github.com/manateelazycat/emacs-application-framework/discussions/527)页面。
 
-如果```emacs -q```环境下问题依旧，请到[这里](https://github.com/manateelazycat/emacs-application-framework/issues/new)反馈。
+关于其他问题，请用命令 `emacs -q` 并只添加EAF配置做一个对比测试，如果 `emacs -q` 可以正常工作，请检查你个人的配置文件。
+
+如果`emacs -q`环境下问题依旧，请到[这里](https://github.com/manateelazycat/emacs-application-framework/issues/new)反馈, 并附带 `*eaf*` 窗口的内容给我们提交issue，那里面有很多线索可以帮助我们排查问题。。
 
 如果你遇到崩溃的问题, 请用下面的方式来收集崩溃信息:
 1. 先安装gdb并打开选项 `eaf-enable-debug`
